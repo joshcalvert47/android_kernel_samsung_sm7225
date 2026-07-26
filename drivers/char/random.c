@@ -825,8 +825,8 @@ static void do_numa_crng_init(struct work_struct *work)
 		crng_initialize(crng);
 		pool[i] = crng;
 	}
-	/* pairs with READ_ONCE() in select_crng() */
-	if (cmpxchg_release(&crng_node_pool, NULL, pool) != NULL) {
+	mb();
+	if (cmpxchg(&crng_node_pool, NULL, pool)) {
 		for_each_node(i)
 			kfree(pool[i]);
 		kfree(pool);
@@ -839,26 +839,8 @@ static void numa_crng_init(void)
 {
 	schedule_work(&numa_crng_init_work);
 }
-
-static struct crng_state *select_crng(void)
-{
-	struct crng_state **pool;
-	int nid = numa_node_id();
-
-	/* pairs with cmpxchg_release() in do_numa_crng_init() */
-	pool = READ_ONCE(crng_node_pool);
-	if (pool && pool[nid])
-		return pool[nid];
-
-	return &primary_crng;
-}
 #else
 static void numa_crng_init(void) {}
-
-static struct crng_state *select_crng(void)
-{
-	return &primary_crng;
-}
 #endif
 
 /*
@@ -962,7 +944,7 @@ static void crng_reseed(struct crng_state *crng, struct entropy_store *r)
 		crng->state[i+4] ^= buf.key[i] ^ rv;
 	}
 	memzero_explicit(&buf, sizeof(buf));
-	WRITE_ONCE(crng->init_time, jiffies);
+	crng->init_time = jiffies;
 	spin_unlock_irqrestore(&crng->lock, flags);
 	if (crng == &primary_crng && crng_init < 2) {
 		invalidate_batched_entropy();
@@ -988,15 +970,12 @@ static void crng_reseed(struct crng_state *crng, struct entropy_store *r)
 static void _extract_crng(struct crng_state *crng,
 			  __u8 out[CHACHA_BLOCK_SIZE])
 {
-	unsigned long v, flags, init_time;
+	unsigned long v, flags;
 
-	if (crng_ready()) {
-		init_time = READ_ONCE(crng->init_time);
-		if (time_after(READ_ONCE(crng_global_init_time), init_time) ||
-		    time_after(jiffies, init_time + CRNG_RESEED_INTERVAL))
-			crng_reseed(crng, crng == &primary_crng ?
-				    &input_pool : NULL);
-	}
+	if (crng_ready() &&
+	    (time_after(crng_global_init_time, crng->init_time) ||
+	     time_after(jiffies, crng->init_time + CRNG_RESEED_INTERVAL)))
+		crng_reseed(crng, crng == &primary_crng ? &input_pool : NULL);
 	spin_lock_irqsave(&crng->lock, flags);
 	if (arch_get_random_long(&v))
 		crng->state[14] ^= v;
@@ -1008,7 +987,15 @@ static void _extract_crng(struct crng_state *crng,
 
 static void extract_crng(__u8 out[CHACHA_BLOCK_SIZE])
 {
-	_extract_crng(select_crng(), out);
+	struct crng_state *crng = NULL;
+
+#ifdef CONFIG_NUMA
+	if (crng_node_pool)
+		crng = crng_node_pool[numa_node_id()];
+	if (crng == NULL)
+#endif
+		crng = &primary_crng;
+	_extract_crng(crng, out);
 }
 
 /*
@@ -1037,7 +1024,15 @@ static void _crng_backtrack_protect(struct crng_state *crng,
 
 static void crng_backtrack_protect(__u8 tmp[CHACHA_BLOCK_SIZE], int used)
 {
-	_crng_backtrack_protect(select_crng(), tmp, used);
+	struct crng_state *crng = NULL;
+
+#ifdef CONFIG_NUMA
+	if (crng_node_pool)
+		crng = crng_node_pool[numa_node_id()];
+	if (crng == NULL)
+#endif
+		crng = &primary_crng;
+	_crng_backtrack_protect(crng, tmp, used);
 }
 
 static ssize_t extract_crng_user(void __user *buf, size_t nbytes)
@@ -1254,6 +1249,7 @@ void add_interrupt_randomness(int irq, int irq_flags)
 
 	fast_mix(fast_pool);
 	add_interrupt_bench(cycles);
+	this_cpu_add(net_rand_state.s1, fast_pool->pool[cycles & 3]);
 
 	if (unlikely(crng_init == 0)) {
 		if ((fast_pool->count >= 64) &&
@@ -1374,14 +1370,14 @@ static void extract_buf(struct entropy_store *r, __u8 *out)
 		__u32 w[5];
 		unsigned long l[LONGS(20)];
 	} hash;
-	__u32 workspace[SHA1_WORKSPACE_WORDS];
+	__u32 workspace[SHA_WORKSPACE_WORDS];
 	unsigned long flags;
 
 	/*
 	 * If we have an architectural hardware random number
 	 * generator, use it for SHA's initial vector
 	 */
-	sha1_init(hash.w);
+	sha_init(hash.w);
 	for (i = 0; i < LONGS(20); i++) {
 		unsigned long v;
 		if (!arch_get_random_long(&v))
@@ -1392,7 +1388,7 @@ static void extract_buf(struct entropy_store *r, __u8 *out)
 	/* Generate a hash across the pool, 16 words (512 bits) at a time */
 	spin_lock_irqsave(&r->lock, flags);
 	for (i = 0; i < r->poolinfo->poolwords; i += 16)
-		sha1_transform(hash.w, (__u8 *)(r->pool + i), workspace);
+		sha_transform(hash.w, (__u8 *)(r->pool + i), workspace);
 
 	/*
 	 * We mix the hash back into the pool to prevent backtracking
@@ -1508,7 +1504,7 @@ static void _warn_unseeded_randomness(const char *func_name, void *caller,
 	print_once = true;
 #endif
 	if (__ratelimit(&unseeded_warning))
-		printk_deferred(KERN_NOTICE "random: %s called from %pS with crng_init=%d\n",
+		pr_notice("random: %s called from %pS with crng_init=%d\n",
 			  func_name, caller, crng_init);
 }
 
@@ -1948,8 +1944,8 @@ static long random_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 			return -EPERM;
 		if (crng_init < 2)
 			return -ENODATA;
-		crng_reseed(&primary_crng, &input_pool);
-		WRITE_ONCE(crng_global_init_time, jiffies - 1);
+		crng_reseed(&primary_crng, NULL);
+		crng_global_init_time = jiffies - 1;
 		return 0;
 	default:
 		return -EINVAL;
@@ -2031,7 +2027,7 @@ static char sysctl_bootid[16];
  * sysctl system call, as 16 bytes of binary data.
  */
 static int proc_do_uuid(struct ctl_table *table, int write,
-			void *buffer, size_t *lenp, loff_t *ppos)
+			void __user *buffer, size_t *lenp, loff_t *ppos)
 {
 	struct ctl_table fake_table;
 	unsigned char buf[64], tmp_uuid[16], *uuid;

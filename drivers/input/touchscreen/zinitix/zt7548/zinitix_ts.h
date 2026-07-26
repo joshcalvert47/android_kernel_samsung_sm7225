@@ -76,6 +76,7 @@ struct zt_ts_platform_data {
 
 	const char *firmware_name;
 	u32 force_update_fac_fw_ver;
+	u32 force_update_fw_ver;
 	const char *chip_name;
 	struct pinctrl *pinctrl;
 #ifdef CONFIG_INPUT_SEC_SECURE_TOUCH

@@ -1715,6 +1715,11 @@ static void zt_ts_fod_event_report(struct zt_ts_info *info, struct point_info to
 			| ((touch_info.byte04.value_u8bit & 0xF0) >> 4);
 		info->scrub_y = ((touch_info.byte03.value_u8bit << 4) & 0xFF0)
 			| ((touch_info.byte04.value_u8bit & 0x0F));
+
+		input_report_key(info->input_dev, KEY_BLACK_UI_GESTURE, 1);
+		input_sync(info->input_dev);
+		input_report_key(info->input_dev, KEY_BLACK_UI_GESTURE, 0);
+		input_sync(info->input_dev);
 #ifdef CONFIG_SAMSUNG_PRODUCT_SHIP
 		input_info(true, &info->client->dev, "%s: FOD %s PRESS: %d\n", __func__,
 				touch_info.byte01.value_u8bit ? "NORMAL" : "LONG", info->scrub_id);
@@ -1730,6 +1735,11 @@ static void zt_ts_fod_event_report(struct zt_ts_info *info, struct point_info to
 			| ((touch_info.byte04.value_u8bit & 0xF0) >> 4);
 		info->scrub_y = ((touch_info.byte03.value_u8bit << 4) & 0xFF0)
 			| ((touch_info.byte04.value_u8bit & 0x0F));
+
+		input_report_key(info->input_dev, KEY_BLACK_UI_GESTURE, 1);
+		input_sync(info->input_dev);
+		input_report_key(info->input_dev, KEY_BLACK_UI_GESTURE, 0);
+		input_sync(info->input_dev);
 #ifdef CONFIG_SAMSUNG_PRODUCT_SHIP
 		input_info(true, &info->client->dev, "%s: FOD RELEASE: %d\n", __func__, info->scrub_id);
 #else
@@ -1743,6 +1753,11 @@ static void zt_ts_fod_event_report(struct zt_ts_info *info, struct point_info to
 			| ((touch_info.byte04.value_u8bit & 0xF0) >> 4);
 		info->scrub_y = ((touch_info.byte03.value_u8bit << 4) & 0xFF0)
 			| ((touch_info.byte04.value_u8bit & 0x0F));
+
+		input_report_key(info->input_dev, KEY_BLACK_UI_GESTURE, 1);
+		input_sync(info->input_dev);
+		input_report_key(info->input_dev, KEY_BLACK_UI_GESTURE, 0);
+		input_sync(info->input_dev);
 #ifdef CONFIG_SAMSUNG_PRODUCT_SHIP
 		input_info(true, &info->client->dev, "%s: FOD OUT: %d\n", __func__, info->scrub_id);
 #else
@@ -1856,8 +1871,8 @@ static bool ts_read_coord(struct zt_ts_info *info)
 
 				info->hover_event = prox_data;
 
-				input_info(true, &client->dev, "PROXIMITY DETECT. LVL = %d\n", !prox_data);
-				input_report_abs(info->input_dev_proximity, ABS_MT_CUSTOM, !prox_data);
+				input_info(true, &client->dev, "PROXIMITY DETECT. LVL = %d\n", prox_data);
+				input_report_abs(info->input_dev_proximity, ABS_MT_CUSTOM, prox_data);
 				input_sync(info->input_dev_proximity);
 				break;
 			}
@@ -2294,6 +2309,13 @@ static bool ts_check_need_upgrade(struct zt_ts_info *info,
 		return true;
 	}
 #endif
+
+	if (info->pdata->force_update_fw_ver > 0 &&
+			cur_reg_version >= info->pdata->force_update_fw_ver) {
+		input_info(true, &info->client->dev, "%s: force update cause 0x%02x >= 0x%02x\n",
+				__func__, cur_reg_version, info->pdata->force_update_fw_ver);
+		return true;
+	}
 
 	if (cur_version > 0xFF)
 		return true;
@@ -3572,7 +3594,6 @@ out:
 static int  zt_ts_open(struct input_dev *dev)
 {
 	struct zt_ts_info *info = misc_info;
-	u8 prev_work_state;
 	int ret = 0;
 
 	if (info == NULL)
@@ -3602,7 +3623,6 @@ static int  zt_ts_open(struct input_dev *dev)
 
 	if (info->sleep_mode) {
 		mutex_lock(&info->work_lock);
-		prev_work_state = info->work_state;
 		info->work_state = SLEEP_MODE_OUT;
 		info->sleep_mode = 0;
 		input_info(true, &info->client->dev, "%s, wake up\n", __func__);
@@ -3611,7 +3631,7 @@ static int  zt_ts_open(struct input_dev *dev)
 		write_cmd(info->client, ZT_WAKEUP_CMD);
 		write_reg(info->client, ZT_OPTIONAL_SETTING, info->m_optional_mode.optional_mode);
 		write_cmd(info->client, 0x0B);
-		info->work_state = prev_work_state;
+		info->work_state = NOTHING;
 		mutex_unlock(&info->work_lock);
 
 #if ESD_TIMER_INTERVAL
@@ -8771,6 +8791,10 @@ static int zt_ts_parse_dt(struct device_node *np,
 #endif
 	of_property_read_string(np, "zinitix,firmware_name", &pdata->firmware_name);
 	of_property_read_string(np, "zinitix,chip_name", &pdata->chip_name);
+
+	ret = of_property_read_u32(np, "zinitix,force_update_fw_ver", &pdata->force_update_fw_ver);
+	if (!ret)
+		input_info(true, dev, "%s: force_update_fw_ver: 0x%02x\n", __func__, pdata->force_update_fw_ver);
 
 	pdata->support_spay = of_property_read_bool(np, "zinitix,spay");
 	pdata->support_aod = of_property_read_bool(np, "zinitix,aod");
