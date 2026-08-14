@@ -1,0 +1,32 @@
+name: Build Kernel
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-20.04
+    steps:
+      - name: Checkout Source
+        uses: actions/checkout@v4
+        with:
+          ref: lineage-23.2
+
+      - name: Set up Build Environment
+        run: |
+          sudo apt update
+          sudo apt install -y build-essential bc gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi \
+            libssl-dev libfl-dev curl wget cpio python-is-python3 python3 git bison flex \
+            device-tree-compiler kmod libelf-dev
+
+      - name: Build Kernel
+        run: |
+          bash build_kernel.sh
+
+      - name: Upload Kernel Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: compiled-kernel
+          path: |
+            out/arch/arm64/boot/Image*
+            out/arch/arm64/boot/dts/
