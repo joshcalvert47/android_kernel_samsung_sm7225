@@ -4329,40 +4329,50 @@ static ssize_t ss_finger_hbm_updated_show(struct device *dev,
 }
 
 static ssize_t ss_fp_green_circle_store(struct device *dev,
-		struct device_attribute *attr, const char *buf, size_t size)
+        struct device_attribute *attr, const char *buf, size_t size)
 {
-	struct samsung_display_driver_data *vdd =
-		(struct samsung_display_driver_data *)dev_get_drvdata(dev);
-	int val = 0;
+    struct samsung_display_driver_data *vdd =
+        (struct samsung_display_driver_data *)dev_get_drvdata(dev);
+    int val = 0;
 
-	if (IS_ERR_OR_NULL(vdd)) {
-		LCD_ERR("no vdd");
-		goto end;
-	}
+    if (IS_ERR_OR_NULL(vdd)) {
+        LCD_ERR("no vdd");
+        goto end;
+    }
 
-	if (!ss_is_ready_to_send_cmd(vdd)) {
-		LCD_ERR("Panel is not ready. Panel State(%d)\n", vdd->panel_state);
-		return size;
-	}
+    if (!ss_is_ready_to_send_cmd(vdd)) {
+        LCD_ERR("Panel is not ready. Panel State(%d)\n", vdd->panel_state);
+        return size;
+    }
 
-	if (sscanf(buf, "%d", &val) != 1)
-		return size;
+    if (sscanf(buf, "%d", &val) != 1)
+        return size;
 
-#if defined(CONFIG_SEC_FACTORY)
-	if (val)
-		ss_send_cmd(vdd, TX_SELF_MASK_GREEN_CIRCLE_ON_FACTORY);
-	else
-		ss_send_cmd(vdd, TX_SELF_MASK_GREEN_CIRCLE_OFF_FACTORY);
-#else
-	if (val)
-		ss_send_cmd(vdd, TX_SELF_MASK_GREEN_CIRCLE_ON);
-	else
-		ss_send_cmd(vdd, TX_SELF_MASK_GREEN_CIRCLE_OFF);
-#endif
-	LCD_INFO("Finger Print Green Circle : %d\n", val);
+    if (val) {
+        /* Turn ON: Write the mask image to panel memory, then turn the mask on */
+        if (vdd->self_disp.self_mask_img_write) {
+            vdd->self_disp.self_mask_img_write(vdd);
+        } else {
+            LCD_ERR("self_mask_img_write hook is NULL\n");
+        }
+        
+        if (vdd->self_disp.self_mask_on) {
+            vdd->self_disp.self_mask_on(vdd, true);
+        } else {
+            LCD_ERR("self_mask_on hook is NULL\n");
+        }
+    } else {
+        /* Turn OFF: Turn the mask off */
+        if (vdd->self_disp.self_mask_on) {
+            vdd->self_disp.self_mask_on(vdd, false);
+        } else {
+            LCD_ERR("self_mask_off hook is NULL\n");
+        }
+    }
+    LCD_INFO("Finger Print Green Circle : %d\n", val);
 
 end:
-	return size;
+    return size;
 }
 
 static ssize_t ss_ub_con_det_show(struct device *dev,
