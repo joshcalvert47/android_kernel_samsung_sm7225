@@ -1,32 +1,80 @@
-name: Build Kernel
+name: Build Samsung SM7225 Kernel
 
 on:
   workflow_dispatch:
+    inputs:
+      KERNEL_DEFCONFIG:
+        description: 'Kernel Defconfig (e.g., vendor/a42xq_defconfig)'
+        required: true
+        default: 'vendor/a42xq_defconfig'
+      DEVICE_CODENAME:
+        description: 'Device Codename (e.g., a42xq)'
+        required: true
+        default: 'a52xq'
 
 jobs:
   build:
-    runs-on: ubuntu-20.04
+    name: Build Kernel for ${{ inputs.DEVICE_CODENAME }}
+    runs-on: ubuntu-22.04
+
     steps:
-      - name: Checkout Source
+      - name: Install Build Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git ccache automake flex lzop bison \
+            gperf build-essential zip curl zlib1g-dev g++-multilib \
+            libxml2-utils bzip2 libbz2-dev libbz2-1.0 libghc-bzlib-dev \
+            squashfs-tools pngcrush schedtool dpkg-dev liblz4-tool \
+            make optipng maven libssl-dev pwgen libswitch-perl \
+            policycoreutils minicom libxml-sax-base-perl libxml-simple-perl \
+            bc libc6-dev-i386 lib32ncurses5-dev libx11-dev lib32z-dev \
+            libgl1-mesa-dev xsltproc unzip device-tree-compiler python3 \
+            gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi
+
+      - name: Checkout Kernel Source
         uses: actions/checkout@v4
         with:
+          repository: joshcalvert47/android_kernel_samsung_sm7225
           ref: lineage-23.2
+          path: kernel
 
-      - name: Set up Build Environment
+      - name: Setup Toolchain (ZyC Clang)
         run: |
-          sudo apt update
-          sudo apt install -y build-essential bc gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi \
-            libssl-dev libfl-dev curl wget cpio python-is-python3 python3 git bison flex \
-            device-tree-compiler kmod libelf-dev
+          # ZyC-Clang is highly reliable for compiling modern Android 4.19 / 5.4+ kernels
+          git clone --depth=1 https://github.com/ZyC-Project/ZyC-Clang.git clang
 
       - name: Build Kernel
         run: |
-          bash build_kernel.sh
+          cd kernel
+          
+          # Setup Environment Variables
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export PATH=$GITHUB_WORKSPACE/clang/bin:$PATH
+          export O=out
+          
+          export KBUILD_BUILD_USER="github-actions"
+          export KBUILD_BUILD_HOST="github-actions"
+          
+          # 1. Generate .config using the provided defconfig
+          make -j$(nproc) O=$O ARCH=$ARCH ${{ inputs.KERNEL_DEFCONFIG }}
+          
+          # 2. Compile the Kernel
+          make -j$(nproc) O=$O ARCH=$ARCH \
+               CC=clang \
+               CROSS_COMPILE=aarch64-linux-gnu- \
+               CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+               LLVM=1 \
+               LLVM_IAS=1
+               
+          # 3. Gather output files into a release folder
+          mkdir -p $GITHUB_WORKSPACE/release
+          find out/arch/arm64/boot -maxdepth 1 -name "Image*" -exec cp {} $GITHUB_WORKSPACE/release/ \;
+          find out/arch/arm64/boot/dts -name "*.dtb" -exec cp {} $GITHUB_WORKSPACE/release/ 2>/dev/null \; || true
+          cp out/arch/arm64/boot/dtbo.img $GITHUB_WORKSPACE/release/ 2>/dev/null || true
 
       - name: Upload Kernel Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: compiled-kernel
-          path: |
-            out/arch/arm64/boot/Image*
-            out/arch/arm64/boot/dts/
+          name: Kernel-Artifacts-${{ inputs.DEVICE_CODENAME }}-${{ github.run_id }}
+          path: release/*
